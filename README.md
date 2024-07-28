@@ -1,0 +1,4 @@
+# Usage
+```
+$ rusty TOKEN
+```
