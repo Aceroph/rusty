@@ -2,20 +2,24 @@ mod colors;
 mod commands;
 mod emojis;
 
+use lavalink_rs::{client::LavalinkClient, model::events, node::NodeBuilder, prelude::NodeDistributionStrategy};
 use poise::CreateReply;
+use poise::serenity_prelude as serenity;
 use serenity::{
     all::{CreateEmbed, GatewayIntents},
     Client,
 };
+use songbird::SerenityInit;
 use std::{collections::HashMap, env, sync::Arc, time::Duration, vec};
-use tokio;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 #[allow(dead_code)] // Context isn't being used by this file but is being used by the commands module :)
 type Context<'a> = poise::Context<'a, Data, Error>;
 
 // User data that is carried with each invocation
-pub struct Data {}
+pub struct Data {
+    pub lavalink: LavalinkClient
+}
 
 // Error handler
 async fn on_error(error: poise::FrameworkError<'_, Data, Error>) {
@@ -89,7 +93,7 @@ pub async fn help(
                 let mut content = String::from("```\n");
                 for cmd in cmds {
                     content.push_str(cmd.qualified_name.as_str());
-                    content.push_str("\n");
+                    content.push('\n');
                 }
                 content.push_str("```");
                 fields.push((cat, content, true));
@@ -111,7 +115,7 @@ pub async fn help(
 
 // Main loop
 #[tokio::main(flavor = "current_thread")]
-async fn main() {
+async fn main() -> Result<(), Error> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         panic!("Missing argument: TOKEN");
@@ -129,24 +133,53 @@ async fn main() {
                 ))),
                 ..Default::default()
             },
-            commands: vec![help(), commands::ping(), commands::play()],
+            // List commands here
+            commands: vec![
+                help(),
+                commands::utility::ping(),
+                commands::music::play(),
+                commands::music::join(),
+                commands::music::leave()
+            ],
             on_error: |error: poise::FrameworkError<Data, Error>| Box::pin(on_error(error)),
             ..Default::default()
         })
         .setup(|ctx, _ready, framework| {
             Box::pin(async move {
                 poise::builtins::register_globally(ctx, &framework.options().commands).await?;
-                Ok(Data {})
+
+                // Call events when a song starts playing, ect..
+                let events = events::Events {
+                    raw: None,
+                    track_start: None,
+                    ready: None,
+                    ..Default::default()
+                };
+
+                // Server node to connect to
+                let node_local = NodeBuilder {
+                    hostname: "localhost:2333".to_string(),
+                    is_ssl: false,
+                    events: events::Events::default(),
+                    password: env::var("LAVALINK_PASSWORD").expect("Missing lavalink password !"),
+                    user_id: ctx.cache.current_user().id.get().into(),
+                    session_id: None
+                };
+
+                // Lavalink client
+                let client = LavalinkClient::new(events, vec![node_local], NodeDistributionStrategy::round_robin()).await;
+
+                Ok(Data {lavalink: client})
             })
         })
         .build();
 
     let mut client: Client = Client::builder(token, intents)
+        .register_songbird()
         .framework(framework)
-        .await
-        .expect("Failed to create client");
+        .await?;
 
-    if let Err(why) = client.start().await {
-        eprintln!("Failed to start client: {:?}", why)
-    }
+    client.start().await?;
+
+    Ok(())
 }
